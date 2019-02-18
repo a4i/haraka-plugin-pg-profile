@@ -1,0 +1,43 @@
+{
+  "name": "haraka-plugin-pg-profile",
+  "version": "0.1.0",
+  "description": "Haraka plugin that fetch users and profiles in postgresql",
+  "main": "index.js",
+  "scripts": {
+    "test": "mocha",
+    "lint": "./node_modules/.bin/eslint *.js test/*.js",
+    "lintfix": "./node_modules/.bin/eslint --fix *.js test/*.js",
+    "cover": "./node_modules/.bin/istanbul cover ./node_modules/.bin/_mocha"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/a4i/haraka-plugin-pg-profile.git"
+  },
+  "keywords": [
+    "Haraka",
+    "plugin",
+    "recipient",
+    "rcpt",
+    "postgres",
+    "postgresql",
+    "acl",
+    "auth"
+  ],
+  "author": "a4i",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/a4i/haraka-plugin-pg-profile/issues"
+  },
+  "homepage": "https://github.com/a4i/haraka-plugin-pg-profile#readme",
+  "dependencies": {
+    "haraka-constants": "*",
+    "sha512crypt-node": "^0.1.0",
+    "pg": "^7.0.2"
+  },
+  "devDependencies": {
+    "eslint": "*",
+    "eslint-plugin-haraka": "*",
+    "haraka-test-fixtures": "*",
+    "mocha": "*"
+  }
+}
