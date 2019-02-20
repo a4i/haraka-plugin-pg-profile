@@ -64,6 +64,13 @@ exports.register = function () {
     this.users_query = config.users_query;
     // domain to append to username to create from mail when not specified :
     this.default_domain = config.default_domain;
+
+    this.use_file_cache = config.use_file_cache;
+    if (this.use_file_cache) {
+        const file_cache_path = config.file_cache_path || "store.json";
+        this.cache = require('node-file-cache').create({ life: 3600 * 24 * 365 * 10, file: file_cache_path });
+    }
+
     this.profiles = {};
     this.users = {};
 };
@@ -78,13 +85,39 @@ exports.init_pg_profile_shared = async function (next, server) {
         calledNext = true;
         next();
     }
+    function pg_done () {
+        plugin.cfg = {'done': true};
+        plugin.logdebug(util.inspect(plugin.profiles, {showHidden: false, depth: null}));
+        plugin.logdebug(util.inspect(plugin.users, {showHidden: false, depth: null}));
+        nextOnce();
+        return true;
+    }
 
     let client;
     try {
         client = await plugin.pool.connect();
     } catch (e) {
         plugin.logerror('Error connecting to pg pool. ' + e);
-        return next(new Error('Error connecting to pg pool. ' + e));
+
+        if (! plugin.use_file_cache) {
+            return next(new Error('Error connecting to pg pool (and no cache configured): ' + e));
+        } else {
+
+            plugin.loginfo('Using file cache');
+            plugin.profiles = plugin.cache.get('profiles');
+            if (!plugin.profiles) {
+                plugin.logerror('No profile cache found');
+                return next(new Error('No profile cache found'));
+            }
+
+            plugin.users = plugin.cache.get('users');
+            if (!plugin.users) {
+                plugin.logerror('No user cache found');
+                return next(new Error('No user cache found'));
+            }
+
+            return pg_done();
+        }
     }
 
     let result;
@@ -95,19 +128,18 @@ exports.init_pg_profile_shared = async function (next, server) {
         return next(new Error('Error fetching profiles from pg. ' + e));
     }
 
-                result.rows.map(r => {
-                    plugin.profiles["p-"+r.id] = {
-                        ...r,
-                        rcpt: r.rcpt ? r.rcpt.split(','): [],
-                        rcpt_re: r.rcpt_re ? r.rcpt_re.split(',').map(r => {
-                            return new RegExp(r)
-                            }) : null,
-                        host: r.host ? r.host.split(','): [],
-                    };
+    result.rows.map(r => {
+        plugin.profiles["p-"+r.id] = {
+            ...r,
+            rcpt: r.rcpt ? r.rcpt.split(','): [],
+            rcpt_re: r.rcpt_re ? r.rcpt_re.split(',').map(rr => {
+                return new RegExp(rr)
+            }) : null,
+            host: r.host ? r.host.split(','): [],
+        };
 
-                });
-                console.log(util.inspect(plugin.profiles, {showHidden: false, depth: null}))
-
+    });
+    plugin.cache.set('profiles', plugin.profiles);
 
     try {
         result = await client.query(plugin.users_query)
@@ -119,13 +151,10 @@ exports.init_pg_profile_shared = async function (next, server) {
         ...r,
         froms: r.froms ? r.froms.split(',') : [r.user + "@" + plugin.default_domain],
     }});
-    console.log(util.inspect(plugin.users, {showHidden: false, depth: null}))
+    plugin.cache.set('users', plugin.users);
 
     client.release();
-    plugin.cfg = {'done': true}
-
-    nextOnce();
-    return true;
+    return pg_done();
 
 };
 
@@ -185,15 +214,15 @@ exports.hook_rcpt = function (next, connection, params) {
     }
 
     const user = plugin.users[auth_user];
-    const profile = plugin.profiles["p-"+user["profile"] ];
+    const profile = plugin.profiles["p-"+user.profile ];
 
     if (!profile) {
-        connection.loginfo(`No profile ${"p-"+user["id"]} found for user ${auth_user} => no rcpt check`);
+        connection.loginfo(`No profile ${"p-"+user.id} found for user ${auth_user} => no rcpt check`);
         next();
         return;
     }
 
-    connection.loginfo(`****** User "${auth_user}" has profile "${profile['name']}"`);
+    connection.loginfo(`****** User "${auth_user}" has profile "${profile.name}"`);
 
     if (profile.open) {
         connection.loginfo(`User ${auth_user} has openbar`);

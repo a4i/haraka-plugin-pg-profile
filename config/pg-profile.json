@@ -7,6 +7,8 @@
   "max": 20,
   "idleTimeoutMillis": 30000,
   "default_domain": "example.com",
+  "use_file_cache": true,
+  "file_cache'path": "/path/to/store.json",
   "profiles_query": "SELECT * FROM profile",
   "users_query": "SELECT * FROM \"user\""
 }

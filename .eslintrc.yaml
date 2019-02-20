@@ -3,6 +3,11 @@ env:
   es6: true
   mocha: true
 
+parserOptions:
+  ecmaVersion: 8
+  ecmaFeatures:
+    experimentalObjectRestSpread: true
+
 plugins: [ haraka ]
 
 extends: [ eslint:recommended, plugin:haraka/recommended ]

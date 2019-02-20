@@ -31,8 +31,9 @@
   "homepage": "https://github.com/a4i/haraka-plugin-pg-profile#readme",
   "dependencies": {
     "haraka-constants": "*",
-    "sha512crypt-node": "^0.1.0",
-    "pg": "^7.0.2"
+    "node-file-cache": "^1.0.2",
+    "pg": "^7.0.2",
+    "sha512crypt-node": "^0.1.0"
   },
   "devDependencies": {
     "eslint": "*",
