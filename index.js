@@ -1,7 +1,9 @@
 /**
  * @author a4i
  *
- * Plugin to validate authentication, mailfrom, rcptto via rules stored in a posgresql database.
+ * Plugin to validate authentication, mailfrom, rcptto, maxsize via rules stored in a posgresql database.
+ * It allows login via JWT : set 'token' as login, and the jsonwebtoken as password. This JWT must hold
+ * the mail sender in a 'mail' payload field.
  *
  * Based on :
  * - https://github.com/haraka/haraka-plugin-rcpt-postgresql
@@ -27,6 +29,8 @@ exports.hook_capabilities = function (next, connection) {
     next();
 }
 
+const jwt = require('jsonwebtoken');
+
 exports.register = function () {
 
     // depuis auth-enc-file
@@ -42,7 +46,9 @@ exports.register = function () {
         host: config.host,
         port: config.port,
         max: config.max,
-        idleTimeoutMillis: config.idleTimeoutMillis
+        search_path: config.schema,
+        schema: config.schema,
+        idleTimeoutMillis: config.idleTimeoutMillis,
     };
 
     //Initialize the connection pool.
@@ -70,6 +76,9 @@ exports.register = function () {
         const file_cache_path = config.file_cache_path || "store.json";
         this.cache = require('node-file-cache').create({ life: 3600 * 24 * 365 * 10, file: file_cache_path });
     }
+
+    this.jwt_secret = config.jwt_secret;
+    this.schema = config.schema;
 
     this.profiles = {};
     this.users = {};
@@ -122,6 +131,7 @@ exports.init_pg_profile_shared = async function (next, server) {
 
     let result;
     try {
+        await client.query(`SET SCHEMA '${plugin.schema}'`);
         result = await client.query(plugin.profiles_query);
     } catch (e) {
         plugin.logerror('Error fetching profiles from pool. ' + e);
@@ -129,8 +139,9 @@ exports.init_pg_profile_shared = async function (next, server) {
     }
 
     result.rows.map(r => {
-        plugin.profiles["p-"+r.id] = {
+        plugin.profiles[r.name === 'token' ? 'token' : "p-"+r.id] = {
             ...r,
+            limits: r.limits ? r.limits.split(','): [],
             rcpt: r.rcpt ? r.rcpt.split(','): [],
             rcpt_re: r.rcpt_re ? r.rcpt_re.split(',').map(rr => {
                 return new RegExp(rr)
@@ -147,10 +158,11 @@ exports.init_pg_profile_shared = async function (next, server) {
         plugin.logerror('Error fetching users from pg. ' + e);
         return next(new Error('Error fetching users from pg. ' + e));
     }
-    result.rows.map(r => {plugin.users[ r.user ] = {
-        ...r,
-        froms: r.froms ? r.froms.split(',') : [r.user + "@" + plugin.default_domain],
-    }});
+    result.rows.map(r => {
+        plugin.users[ r.username ] = {
+            ...r,
+            froms: r.froms ? r.froms.split(',') : [r.username + "@" + plugin.default_domain],
+        }});
     plugin.cache.set('users', plugin.users);
 
     client.release();
@@ -160,7 +172,19 @@ exports.init_pg_profile_shared = async function (next, server) {
 
 exports.check_plain_passwd = function (connection, user, passwd, cb) {
     const plugin = this;
-    if (plugin.users.hasOwnProperty(user) && plugin.users[user].password) {
+
+    if (user === "token") {
+        jwt.verify(passwd, plugin.jwt_secret, (err, decoded) => {
+            if (err) {
+                connection.loginfo(`Token invalid ${passwd}`);
+                return cb(false)
+            }
+            connection.loginfo('Token OK', decoded);
+            connection.notes.jwt_mail = decoded.mail;
+            return cb(true)
+        });
+    }
+    else if (plugin.users.hasOwnProperty(user) && plugin.users[user].password) {
         try {
             const [method, id, salt, hash] = plugin.users[user].password.split('$');
             const authenticated = cb(sha512crypt(passwd, salt) === `$${id}$${salt}$${hash}`);
@@ -170,16 +194,25 @@ exports.check_plain_passwd = function (connection, user, passwd, cb) {
             connection.logerror(`Unable to verify password for user ${user}`)
             return cb(false);
         }
+    } else {
+        connection.loginfo(`User ${user} unknown`);
+        return cb(false);
     }
-    connection.loginfo(`User ${user} unknown`);
-    return cb(false);
-}
+};
 
 exports.hook_mail = function (next, connection, params) {
     const plugin = this;
 
     const mail_from = params[0].address();
     const auth_user = connection.notes.auth_user;
+    if (auth_user === 'token') {
+        if (mail_from !== connection.notes.jwt_mail) {
+            connection.loginfo(`Tokenized MAIL FROM ${mail_from} check failed for user ${connection.notes.jwt_mail}`);
+            return next(DENY, 'Your token is not authorized to send from this address');
+        }
+        connection.loginfo(`MAIL FROM check pass for ${mail_from}`);
+        return next();
+    }
     if (!auth_user || !plugin.users.hasOwnProperty(auth_user) || !plugin.users[auth_user]) {
         connection.loginfo("No authenticated user found => no MAIL FROM check");
         return next();
@@ -191,7 +224,7 @@ exports.hook_mail = function (next, connection, params) {
         return next(DENY, 'You are not authorized to send from this address');
     }
     return next();
-}
+};
 
 exports.hook_rcpt = function (next, connection, params) {
     let calledNext = false;
@@ -206,7 +239,11 @@ exports.hook_rcpt = function (next, connection, params) {
     const rcpt = params[0];
 
     const plugin = this;
-    const auth_user = connection.notes.auth_user
+    const auth_user = connection.notes.auth_user;
+    if (auth_user === 'token') {
+        connection.loginfo('No rcpt check for token user '+connection.notes.jwt_mail);
+        return next();
+    }
     if (!connection.notes.auth_user || !plugin.users.hasOwnProperty(auth_user) || !plugin.users[auth_user]) {
         connection.loginfo("No authenticated user found => no rcpt check");
         next();
@@ -214,15 +251,15 @@ exports.hook_rcpt = function (next, connection, params) {
     }
 
     const user = plugin.users[auth_user];
-    const profile = plugin.profiles["p-"+user.profile ];
+    const profile = plugin.profiles["p-"+user.profileId ];
 
     if (!profile) {
-        connection.loginfo(`No profile ${"p-"+user.id} found for user ${auth_user} => no rcpt check`);
+        connection.logerror(`No profile ${"p-"+user.profileId} found for user ${auth_user} => no rcpt check`);
         next();
         return;
     }
 
-    connection.loginfo(`****** User "${auth_user}" has profile "${profile.name}"`);
+    connection.loginfo(`User "${auth_user}" has profile "${profile.name}"`);
 
     if (profile.open) {
         connection.loginfo(`User ${auth_user} has openbar`);
@@ -236,7 +273,7 @@ exports.hook_rcpt = function (next, connection, params) {
     }
 
     const rcptto = rcpt.user + "@" + rcpt.host;
-    connection.loginfo(`********* looking for  ${rcptto} ****************`);
+    connection.loginfo(`Looking for rcptto ${rcptto}`);
 
     if (profile.rcpt.indexOf(rcptto) >= 0) {
         connection.loginfo(`User ${auth_user} can send to rcpt ${rcpt.original}`);
@@ -282,6 +319,31 @@ exports.hook_data_post = function (next, connection) {
     if (connection.transaction.results.has('data.headers', 'fail', /^from_match/)) {
         connection.loginfo('Envelope and body FROM mismatch')
         return next(constants.DENY, `Envelope and body FROM mismatch`);
+    }
+
+    const plugin = this;
+    const token = connection.notes.auth_user === 'token';
+    const auth_user = token ? connection.notes.jwt_mail : connection.notes.auth_user;
+    if (!token) {
+        if (!connection.notes.auth_user || !plugin.users.hasOwnProperty(auth_user) || !plugin.users[auth_user]) {
+            connection.loginfo("No authenticated user found => no size check");
+            next();
+            return;
+        }
+    }
+
+    const user = token ? null : plugin.users[auth_user];
+    const profile = plugin.profiles[token ? 'token' : "p-"+user.profileId ];
+
+    if (!profile) {
+        connection.logerror(`No profile found for user ${auth_user} => no size check`);
+        next();
+        return;
+    }
+
+    if (profile.maxsize && connection.transaction.data_bytes > profile.maxsize) {
+        this.logerror(`Incoming message exceeded databytes size of ${profile.maxsize}`);
+        return next(constants.DENY, `Message too big for you!`);
     }
 
     next();

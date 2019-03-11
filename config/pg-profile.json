@@ -4,11 +4,13 @@
   "password": "",
   "host": "127.0.0.1",
   "port": 5432,
+  "schema": "haraka",
   "max": 20,
   "idleTimeoutMillis": 30000,
   "default_domain": "example.com",
+  "jwt_secret": "secret4jwt",
   "use_file_cache": true,
   "file_cache'path": "/path/to/store.json",
-  "profiles_query": "SELECT * FROM profile",
-  "users_query": "SELECT * FROM \"user\""
+  "profiles_query": "SELECT * FROM profiles",
+  "users_query": "SELECT * FROM users"
 }

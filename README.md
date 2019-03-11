@@ -10,27 +10,44 @@ Validates authentication, mailfrom, rcptto via rules stored in a posgresql datab
 ### Create database
 
 ```sql
-CREATE TABLE public.profile (
+CREATE TABLE haraka.profiles (
     id integer NOT NULL,
-    name character varying(128) NOT NULL,
-    "desc" text,
+    name character varying(255),
+    "desc" character varying(255),
+    open boolean DEFAULT false NOT NULL,
+    limits text,
+    maxsize integer DEFAULT 0 NOT NULL,
+    host text,
     rcpt text,
     rcpt_re text,
-    host text,
-    open boolean DEFAULT false NOT NULL
+    "createdAt" timestamp with time zone DEFAULT ('now'::text)::timestamp(3) with time zone,
+    "updatedAt" timestamp with time zone DEFAULT ('now'::text)::timestamp(3) with time zone
 );
+CREATE SEQUENCE haraka.profiles_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER TABLE ONLY haraka.users ALTER COLUMN id SET DEFAULT nextval('haraka.users_id_seq'::regclass);
 
-CREATE TABLE public."user" (
+CREATE TABLE haraka.users (
     id integer NOT NULL,
-    "user" character varying(128) NOT NULL,
-    password character varying(256) NOT NULL,
-    profile integer NOT NULL,
-    froms text DEFAULT ''::text,
-    "limit" character varying(128) DEFAULT NULL::character varying
+    username character varying(128) NOT NULL,
+    password character varying(255) NOT NULL,
+    froms text,
+    "createdAt" timestamp with time zone DEFAULT ('now'::text)::timestamp(3) with time zone,
+    "updatedAt" timestamp with time zone DEFAULT ('now'::text)::timestamp(3) with time zone,
+    "profileId" integer
 );
-
+CREATE SEQUENCE haraka.users_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER TABLE ONLY haraka.profiles ALTER COLUMN id SET DEFAULT nextval('haraka.profiles_id_seq'::regclass);
 ```
-You should create autoincrement sequences for id columns.
 
 ### Enable
 
@@ -40,39 +57,56 @@ Add the following line to the `config/plugins` file.
 
 ## Config
 
-The `pg-profile.json` file has the following structure (defaults shown). Also note that this file will need to be created, if not present, in the `config` directory.
+The `pg-profile.json` file has the following structure (defaults shown). Also note that this file will need
+to be created, if not present, in the `config` directory.
 
 ```javascript
 {
-  "user": "pguser", 
+  "user": "pguser",
   "database": "haraka",
   "password": "",
   "host": "127.0.0.1",
   "port": 5432,
+  "schema": "haraka",
   "max": 20,
   "idleTimeoutMillis": 30000,
   "default_domain": "example.com",
-  "profiles_query": "SELECT * FROM profile",
-  "users_query": "SELECT * FROM \"user\""
+  "jwt_secret": "secret4jwt",
+  "use_file_cache": true,
+  "file_cache'path": "/path/to/store.json",
+  "profiles_query": "SELECT * FROM profiles",
+  "users_query": "SELECT * FROM users"
 }
 ```
 
-### Profile table
+### Profiles table
 
 Populate your profiles this way :
 * name : for log readability
 * desc : description, no use actually
+* open : if True, no restriction applies to users with this profile (not emplemented yet)
+* limits : comma separated list of limits. See haraka-plugin-limit. Ex: 1/5m,500/1d. All limits must be respected.
+* maxsize : max total size in bytes. config/databytes will apply too.
 * rcpt : comma separated list of emails this profile can send mail to (optional)
 * rcpt_re : comma separated list of regexp to check emails addresses this profile can send mail to (optional)
 * host : comma separated list of domains this profile can send mail to (optional)
-* open : true means no restriction
 
-### User table
+### Users table
 
 Populate your users this way :
-* user : username used for SMTP authentication
+* username : username used for SMTP authentication
 * password : SHA512 encoded password for SMTP authentication (see auth-enc-file plugin)
-* profile : profile id this user belongs to
+* profileId : profile id this user belongs to
 * froms : comma separated list of emails addresses this user can user for envelope MAIL FROM
 
-All profiles and users are fetched at startup and kept in memory.
+All profiles and users are fetched at startup and kept in memory. They are stored in a local cache too, in case
+of restart during a Postresql outage.
+
+## JWT authentication
+
+Users can authenticate using a JWT with a **mail** payload field.
+
+In this case, a profile named **token** must be present in the *profiles* table.
+This profile will be use for every JWT authenticated users. They don't have to be present in the
+users table (therefore you can't set different *from* mail addresses, and they have to use the only mail
+present in the token).
