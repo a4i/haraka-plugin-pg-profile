@@ -49,6 +49,40 @@ CREATE SEQUENCE haraka.users_id_seq
 ALTER TABLE ONLY haraka.profiles ALTER COLUMN id SET DEFAULT nextval('haraka.profiles_id_seq'::regclass);
 ```
 
+#### Use triggers to refresh cache
+
+The plugin uses LISTEN/PUBLISH Postgresql pattern, listening to events from the *haraka* channel.
+
+When an event is received, *users* and *profiles* tables are scanned to rebuild in-memory and file caches.
+
+You can use triggers to emit events. Here events are sent for every db update. Maybe your use case let you do better :
+
+```sql
+CREATE OR REPLACE FUNCTION notify_haraka()
+  RETURNS trigger AS
+$BODY$
+    BEGIN
+        PERFORM pg_notify('haraka', TG_TABLE_NAME || '-' || TG_OP);
+        RETURN NULL;
+    END;
+$BODY$
+  LANGUAGE plpgsql VOLATILE
+COST 100;
+
+CREATE TRIGGER notify_haraka
+  AFTER INSERT OR UPDATE OR DELETE
+  ON "users"
+  FOR EACH ROW
+EXECUTE PROCEDURE notify_haraka();
+CREATE TRIGGER notify_haraka
+  AFTER INSERT OR UPDATE OR DELETE
+  ON "profiles"
+  FOR EACH ROW
+EXECUTE PROCEDURE notify_haraka();
+```
+
+Note that every Haraka fork (see *nodes* directive in smtp.ini) will open and maintain one connection to PG to receive notifications.
+
 ### Enable
 
 Add the following line to the `config/plugins` file.

@@ -1,3 +1,4 @@
+/* eslint-disable no-trailing-spaces */
 /**
  * @author a4i
  *
@@ -39,6 +40,8 @@ exports.register = function () {
     this.logdebug("Initializing pg-profile plugin.");
     const config = this.config.get('pg-profile.json');
 
+    this.config = {...config};
+
     const dbConfig = {
         user: config.user,
         database: config.database,
@@ -66,19 +69,12 @@ exports.register = function () {
     this.register_hook('init_master', 'init_pg_profile_shared');
     this.register_hook('init_child', 'init_pg_profile_shared');
     //this.sqlQuery = config.sqlQuery;
-    this.profiles_query = config.profiles_query;
-    this.users_query = config.users_query;
     // domain to append to username to create from mail when not specified :
-    this.default_domain = config.default_domain;
 
-    this.use_file_cache = config.use_file_cache;
-    if (this.use_file_cache) {
+    if (this.config.use_file_cache) {
         const file_cache_path = config.file_cache_path || "store.json";
         this.cache = require('node-file-cache').create({ life: 3600 * 24 * 365 * 10, file: file_cache_path });
     }
-
-    this.jwt_secret = config.jwt_secret;
-    this.schema = config.schema;
 
     this.profiles = {};
     this.users = {};
@@ -102,13 +98,79 @@ exports.init_pg_profile_shared = async function (next, server) {
         return true;
     }
 
+    async function load_config_from_pg () {
+        plugin.loginfo('>>>>>>>> load conf from pg');
+
+        let psql;
+        let done = false;
+
+        try {
+            psql = await plugin.pool.connect();
+        } catch (e) {
+            plugin.logerror('Error connecting to pg pool. ' + e);
+            return false; // le caller doit utiliser le cache fichier si dispo
+        }
+
+        try {
+            let result;
+            let users = {};
+            let profiles = {};
+
+            await psql.query(`SET SCHEMA '${plugin.config.schema}'`);
+            result = await psql.query(plugin.config.profiles_query);
+
+            result.rows.map(r => {
+                profiles[r.name === 'token' ? 'token' : "p-"+r.id] = {
+                    ...r,
+                    limits: r.limits ? r.limits.split(','): [],
+                    rcpt: r.rcpt ? r.rcpt.split(','): [],
+                    rcpt_re: r.rcpt_re ? r.rcpt_re.split(',').map(rr => {
+                        return new RegExp(rr)
+                    }) : null,
+                    host: r.host ? r.host.split(','): [],
+                };
+
+            });
+            plugin.profiles = profiles;
+            plugin.cache.set('profiles', plugin.profiles);
+
+            result = await psql.query(plugin.config.users_query)
+            result.rows.map(r => {
+                users[ r.username ] = {
+                    ...r,
+                    froms: r.froms ? r.froms.split(',') : [r.username + "@" + plugin.config.default_domain],
+                }});
+            plugin.users = users;
+            plugin.cache.set('users', plugin.users);
+
+            plugin.loginfo(`>>>>>>>> Loaded ${Object.keys(users).length} users and ${Object.keys(profiles).length} profiles from PG`);
+
+            done = true;
+
+        } catch (e) {
+            plugin.logerror('Error fetching conf from pg: ' + e);
+        } finally {
+            psql.release();
+        }
+
+        return done;
+    }
+
     let client;
     try {
         client = await plugin.pool.connect();
+
+        client.on('notification', async function (msg) {
+            plugin.loginfo('>>>>>>>>>>>>>>>> PG_NOTIFICATION '+JSON.stringify(msg));
+            await load_config_from_pg();
+        });
+
+        client.query('LISTEN haraka');
+
     } catch (e) {
         plugin.logerror('Error connecting to pg pool. ' + e);
 
-        if (! plugin.use_file_cache) {
+        if (! plugin.config.use_file_cache) {
             return next(new Error('Error connecting to pg pool (and no cache configured): ' + e));
         } else {
 
@@ -129,43 +191,9 @@ exports.init_pg_profile_shared = async function (next, server) {
         }
     }
 
-    let result;
-    try {
-        await client.query(`SET SCHEMA '${plugin.schema}'`);
-        result = await client.query(plugin.profiles_query);
-    } catch (e) {
-        plugin.logerror('Error fetching profiles from pool. ' + e);
-        return next(new Error('Error fetching profiles from pg. ' + e));
-    }
+    await load_config_from_pg();
 
-    result.rows.map(r => {
-        plugin.profiles[r.name === 'token' ? 'token' : "p-"+r.id] = {
-            ...r,
-            limits: r.limits ? r.limits.split(','): [],
-            rcpt: r.rcpt ? r.rcpt.split(','): [],
-            rcpt_re: r.rcpt_re ? r.rcpt_re.split(',').map(rr => {
-                return new RegExp(rr)
-            }) : null,
-            host: r.host ? r.host.split(','): [],
-        };
-
-    });
-    plugin.cache.set('profiles', plugin.profiles);
-
-    try {
-        result = await client.query(plugin.users_query)
-    } catch (e) {
-        plugin.logerror('Error fetching users from pg. ' + e);
-        return next(new Error('Error fetching users from pg. ' + e));
-    }
-    result.rows.map(r => {
-        plugin.users[ r.username ] = {
-            ...r,
-            froms: r.froms ? r.froms.split(',') : [r.username + "@" + plugin.default_domain],
-        }});
-    plugin.cache.set('users', plugin.users);
-
-    client.release();
+    //???client.release();
     return pg_done();
 
 };
@@ -174,7 +202,7 @@ exports.check_plain_passwd = function (connection, user, passwd, cb) {
     const plugin = this;
 
     if (user === "token") {
-        jwt.verify(passwd, plugin.jwt_secret, (err, decoded) => {
+        jwt.verify(passwd, plugin.config.jwt_secret, (err, decoded) => {
             if (err) {
                 connection.loginfo(`Token invalid ${passwd}`);
                 return cb(false)
