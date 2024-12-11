@@ -32,7 +32,7 @@
   "dependencies": {
     "haraka-constants": "*",
     "node-file-cache": "^1.0.2",
-    "pg": "^7.0.2",
+    "pg": "^8.13.1",
     "sha512crypt-node": "^0.1.0",
     "jsonwebtoken": "latest"
   },
